@@ -21,3 +21,12 @@ __pycache__/
 Thumbs.db
 .idea/
 .vscode/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Datasets
+data/*.csv
+data/processed/*.csv
