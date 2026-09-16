@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from dataclasses import fields
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -14,12 +15,42 @@ from src.email_parser import ParsedEmail
 from src.feature_extractor import EmailFeatures, extract_features
 from src.security_checks import SecurityEvidence
 
+EMAIL_FEATURE_FIELDS = [
+    "subject",
+    "body_plain",
+    "header_spf_result",
+    "header_dkim_result",
+    "header_dmarc_result",
+    "has_reply_to",
+    "from_reply_to_address_mismatch",
+    "from_reply_to_domain_mismatch",
+    "from_return_path_domain_mismatch",
+    "num_received_headers",
+    "url_count",
+    "unique_url_count",
+    "url_length_max",
+    "ip_url_count",
+    "punycode_url_count",
+    "attachment_count",
+    "has_risky_attachment",
+    "has_html",
+]
+
+REMOVED_MODEL_FIELDS = {
+    "num_to_recipients",
+    "num_cc_recipients",
+    "url_length_avg",
+}
+
 IDENTITY_LIKE_FIELDS = {
     "from_address",
     "reply_to",
     "reply_to_address",
+    "return_path",
+    "return_path_address",
     "from_domain",
     "reply_to_domain",
+    "return_path_domain",
     "to_addresses",
     "cc_addresses",
     "date",
@@ -45,6 +76,8 @@ def _sample_parsed(**overrides) -> ParsedEmail:
         from_address="alice@example.com",
         from_domain="example.com",
         reply_to="alice@example.com",
+        return_path="alice@example.com",
+        return_path_domain="example.com",
         to_addresses=["bob@example.com"],
         cc_addresses=["carol@example.com"],
         date="Mon, 14 Sep 2026 10:00:00 +0000",
@@ -70,6 +103,7 @@ def _sample_evidence(**overrides) -> SecurityEvidence:
         reply_to_domain="example.com",
         from_reply_to_address_mismatch=False,
         from_reply_to_domain_mismatch=False,
+        from_return_path_domain_mismatch=False,
         header_spf_result="pass",
         header_dkim_result="pass",
         header_dmarc_result="pass",
@@ -85,6 +119,7 @@ def _sample_evidence(**overrides) -> SecurityEvidence:
         url_length_max=40.0,
         url_length_avg=40.0,
         ip_url_count=0,
+        punycode_url_count=0,
         urls=["https://intranet.example.com/agenda"],
         url_hosts=["intranet.example.com"],
     )
@@ -105,17 +140,26 @@ class FeatureExtractorTests(unittest.TestCase):
         self.assertTrue(features.has_reply_to)
         self.assertEqual(features.from_reply_to_address_mismatch, "false")
         self.assertEqual(features.from_reply_to_domain_mismatch, "false")
-        self.assertEqual(features.num_to_recipients, 1)
-        self.assertEqual(features.num_cc_recipients, 1)
+        self.assertEqual(features.from_return_path_domain_mismatch, "false")
         self.assertEqual(features.num_received_headers, 1)
         self.assertEqual(features.url_count, 1)
         self.assertEqual(features.unique_url_count, 1)
         self.assertEqual(features.url_length_max, 40.0)
-        self.assertEqual(features.url_length_avg, 40.0)
         self.assertEqual(features.ip_url_count, 0)
+        self.assertEqual(features.punycode_url_count, 0)
         self.assertEqual(features.attachment_count, 1)
         self.assertFalse(features.has_risky_attachment)
         self.assertTrue(features.has_html)
+
+    def test_email_features_schema_is_exactly_eighteen_fields(self) -> None:
+        names = [item.name for item in fields(EmailFeatures)]
+        self.assertEqual(names, EMAIL_FEATURE_FIELDS)
+        self.assertEqual(len(names), 18)
+        exported = extract_features(_sample_parsed(), _sample_evidence()).to_dict()
+        self.assertEqual(list(exported.keys()), EMAIL_FEATURE_FIELDS)
+        for removed in REMOVED_MODEL_FIELDS:
+            self.assertNotIn(removed, exported)
+            self.assertNotIn(removed, names)
 
     def test_missing_auth_and_reply_to_become_unknown_not_fail(self) -> None:
         evidence = _sample_evidence(
@@ -124,6 +168,7 @@ class FeatureExtractorTests(unittest.TestCase):
             reply_to_domain=None,
             from_reply_to_address_mismatch=None,
             from_reply_to_domain_mismatch=None,
+            from_return_path_domain_mismatch=None,
             header_spf_result=None,
             header_dkim_result=None,
             header_dmarc_result=None,
@@ -134,6 +179,7 @@ class FeatureExtractorTests(unittest.TestCase):
         self.assertEqual(features.header_dmarc_result, "unknown")
         self.assertEqual(features.from_reply_to_address_mismatch, "unknown")
         self.assertEqual(features.from_reply_to_domain_mismatch, "unknown")
+        self.assertEqual(features.from_return_path_domain_mismatch, "unknown")
         self.assertFalse(features.has_reply_to)
         self.assertNotEqual(features.header_spf_result, "fail")
 
@@ -165,7 +211,27 @@ class FeatureExtractorTests(unittest.TestCase):
         features = extract_features(_sample_parsed(), evidence)
         self.assertEqual(features.url_count, 0)
         self.assertIsNone(features.url_length_max)
-        self.assertIsNone(features.url_length_avg)
+        self.assertEqual(features.ip_url_count, 0)
+        self.assertEqual(features.punycode_url_count, 0)
+        self.assertNotIn("url_length_avg", features.to_dict())
+
+    def test_punycode_and_return_path_features_are_mapped(self) -> None:
+        match_features = extract_features(
+            _sample_parsed(),
+            _sample_evidence(
+                from_return_path_domain_mismatch=False,
+                punycode_url_count=2,
+                url_count=3,
+            ),
+        )
+        self.assertEqual(match_features.from_return_path_domain_mismatch, "false")
+        self.assertEqual(match_features.punycode_url_count, 2)
+
+        mismatch_features = extract_features(
+            _sample_parsed(),
+            _sample_evidence(from_return_path_domain_mismatch=True),
+        )
+        self.assertEqual(mismatch_features.from_return_path_domain_mismatch, "true")
 
     def test_has_risky_attachment_from_extension_or_mime_without_counting(self) -> None:
         both = extract_features(

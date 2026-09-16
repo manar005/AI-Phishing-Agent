@@ -21,14 +21,13 @@ class EmailFeatures:
     has_reply_to: bool
     from_reply_to_address_mismatch: str
     from_reply_to_domain_mismatch: str
-    num_to_recipients: int
-    num_cc_recipients: int
+    from_return_path_domain_mismatch: str
     num_received_headers: int
     url_count: int
     unique_url_count: int
     url_length_max: float | None
-    url_length_avg: float | None
     ip_url_count: int
+    punycode_url_count: int
     attachment_count: int
     has_risky_attachment: bool
     has_html: bool
@@ -48,14 +47,13 @@ def extract_features(parsed: ParsedEmail, evidence: SecurityEvidence) -> EmailFe
         has_reply_to=evidence.has_reply_to,
         from_reply_to_address_mismatch=_bool_category(evidence.from_reply_to_address_mismatch),
         from_reply_to_domain_mismatch=_bool_category(evidence.from_reply_to_domain_mismatch),
-        num_to_recipients=evidence.num_to_recipients,
-        num_cc_recipients=evidence.num_cc_recipients,
+        from_return_path_domain_mismatch=_bool_category(evidence.from_return_path_domain_mismatch),
         num_received_headers=evidence.num_received_headers,
         url_count=evidence.url_count,
         unique_url_count=evidence.unique_url_count,
         url_length_max=evidence.url_length_max,
-        url_length_avg=evidence.url_length_avg,
         ip_url_count=evidence.ip_url_count,
+        punycode_url_count=evidence.punycode_url_count,
         attachment_count=evidence.attachment_count,
         has_risky_attachment=_has_risky_attachment(evidence),
         has_html=evidence.has_html,

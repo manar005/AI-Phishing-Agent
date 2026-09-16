@@ -22,6 +22,8 @@ def _normal_email() -> ParsedEmail:
         from_address="alice@example.com",
         from_domain="example.com",
         reply_to="alice@example.com",
+        return_path="alice@example.com",
+        return_path_domain="example.com",
         to_addresses=["bob@example.com"],
         cc_addresses=["carol@example.com"],
         received_headers=["from mail.example.com by mx.example.com"],
@@ -84,6 +86,9 @@ class SecurityChecksTests(unittest.TestCase):
         self.assertEqual(evidence.reply_to_domain, "example.com")
         self.assertFalse(evidence.from_reply_to_address_mismatch)
         self.assertFalse(evidence.from_reply_to_domain_mismatch)
+        self.assertFalse(evidence.from_return_path_domain_mismatch)
+        self.assertEqual(evidence.return_path_address, "alice@example.com")
+        self.assertEqual(evidence.return_path_domain, "example.com")
         self.assertEqual(evidence.header_spf_result, "pass")
         self.assertEqual(evidence.header_dkim_result, "pass")
         self.assertEqual(evidence.header_dmarc_result, "pass")
@@ -97,6 +102,7 @@ class SecurityChecksTests(unittest.TestCase):
         self.assertEqual(evidence.url_count, 2)
         self.assertEqual(evidence.unique_url_count, 1)
         self.assertGreater(evidence.url_length_max or 0, 0)
+        self.assertEqual(evidence.punycode_url_count, 0)
         self.assertFalse(evidence.has_ip_url)
         self.assertEqual(evidence.url_hosts, ["intranet.example.com"])
         self.assertNotIn("is_phishing", evidence.to_dict())
@@ -142,14 +148,94 @@ class SecurityChecksTests(unittest.TestCase):
         self.assertIsNone(evidence.reply_to_address)
         self.assertIsNone(evidence.from_reply_to_address_mismatch)
         self.assertIsNone(evidence.from_reply_to_domain_mismatch)
+        self.assertIsNone(evidence.from_return_path_domain_mismatch)
         self.assertIsNone(evidence.header_spf_result)
         self.assertIsNone(evidence.header_dkim_result)
         self.assertIsNone(evidence.header_dmarc_result)
         self.assertEqual(evidence.url_count, 0)
+        self.assertEqual(evidence.punycode_url_count, 0)
         self.assertIsNone(evidence.url_length_max)
         self.assertIsNone(evidence.url_length_avg)
         self.assertFalse(evidence.has_html)
         self.assertEqual(evidence.risky_attachment_extensions, [])
+
+    def test_return_path_domain_match(self) -> None:
+        parsed = ParsedEmail(
+            from_address="alice@example.com",
+            from_domain="example.com",
+            return_path="bounce@example.com",
+            return_path_domain="example.com",
+        )
+        evidence = run_security_checks(parsed)
+        self.assertFalse(evidence.from_return_path_domain_mismatch)
+
+    def test_return_path_domain_mismatch(self) -> None:
+        parsed = ParsedEmail(
+            from_address="alice@example.com",
+            from_domain="example.com",
+            return_path="bounce@unrelated.biz",
+            return_path_domain="unrelated.biz",
+        )
+        evidence = run_security_checks(parsed)
+        self.assertTrue(evidence.from_return_path_domain_mismatch)
+
+    def test_missing_return_path_is_unknown_not_mismatch(self) -> None:
+        parsed = ParsedEmail(
+            from_address="alice@example.com",
+            from_domain="example.com",
+        )
+        evidence = run_security_checks(parsed)
+        self.assertIsNone(evidence.return_path_address)
+        self.assertIsNone(evidence.return_path_domain)
+        self.assertIsNone(evidence.from_return_path_domain_mismatch)
+
+    def test_empty_return_path_is_unknown_not_mismatch(self) -> None:
+        parsed = ParsedEmail(
+            from_address="alice@example.com",
+            from_domain="example.com",
+            return_path="",
+            return_path_domain=None,
+        )
+        evidence = run_security_checks(parsed)
+        self.assertIsNone(evidence.from_return_path_domain_mismatch)
+
+    def test_punycode_urls_are_counted_from_hostname_labels(self) -> None:
+        parsed = ParsedEmail(
+            body_plain="Open https://xn--80ak6aa92e.com/login and https://example.xn--p1ai/path",
+        )
+        evidence = run_security_checks(parsed)
+        self.assertEqual(evidence.url_count, 2)
+        self.assertEqual(evidence.punycode_url_count, 2)
+        self.assertEqual(evidence.ip_url_count, 0)
+
+    def test_normal_url_is_not_counted_as_punycode(self) -> None:
+        parsed = ParsedEmail(
+            body_plain="See https://intranet.example.com/agenda",
+        )
+        evidence = run_security_checks(parsed)
+        self.assertEqual(evidence.url_count, 1)
+        self.assertEqual(evidence.unique_url_count, 1)
+        self.assertEqual(evidence.punycode_url_count, 0)
+        self.assertGreater(evidence.url_length_max or 0, 0)
+
+    def test_no_urls_leave_url_stats_empty(self) -> None:
+        parsed = ParsedEmail(body_plain="No links here.")
+        evidence = run_security_checks(parsed)
+        self.assertEqual(evidence.url_count, 0)
+        self.assertEqual(evidence.unique_url_count, 0)
+        self.assertEqual(evidence.ip_url_count, 0)
+        self.assertEqual(evidence.punycode_url_count, 0)
+        self.assertIsNone(evidence.url_length_max)
+        self.assertEqual(evidence.urls, [])
+        self.assertEqual(evidence.url_hosts, [])
+
+    def test_punycode_in_url_path_is_not_counted(self) -> None:
+        parsed = ParsedEmail(
+            body_plain="See https://example.com/xn--not-a-host",
+        )
+        evidence = run_security_checks(parsed)
+        self.assertEqual(evidence.url_count, 1)
+        self.assertEqual(evidence.punycode_url_count, 0)
 
     def test_received_spf_header_is_used_when_authentication_results_missing(self) -> None:
         parsed = ParsedEmail(

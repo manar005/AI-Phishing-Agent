@@ -75,10 +75,13 @@ class SecurityEvidence:
     has_reply_to: bool = False
     from_address: str | None = None
     reply_to_address: str | None = None
+    return_path_address: str | None = None
     from_domain: str | None = None
     reply_to_domain: str | None = None
+    return_path_domain: str | None = None
     from_reply_to_address_mismatch: bool | None = None
     from_reply_to_domain_mismatch: bool | None = None
+    from_return_path_domain_mismatch: bool | None = None
     # Header-reported results only; this app does not verify SPF/DKIM/DMARC.
     header_spf_result: str | None = None
     header_dkim_result: str | None = None
@@ -97,6 +100,7 @@ class SecurityEvidence:
     url_length_max: float | None = None
     url_length_avg: float | None = None
     ip_url_count: int = 0
+    punycode_url_count: int = 0
     has_ip_url: bool = False
     url_hosts: list[str] = field(default_factory=list)
     urls: list[str] = field(default_factory=list)
@@ -109,14 +113,21 @@ def run_security_checks(parsed: ParsedEmail) -> SecurityEvidence:
     """Return behavioral evidence from a parsed email. No phishing label or score."""
     from_address = _normalize_address(parsed.from_address)
     reply_to_address = _normalize_address(parsed.reply_to)
+    return_path_address = _normalize_address(parsed.return_path)
     from_domain = parsed.from_domain.lower().strip() if parsed.from_domain else _domain_from_address(from_address)
     reply_to_domain = _domain_from_address(reply_to_address)
+    return_path_domain = (
+        parsed.return_path_domain.lower().strip()
+        if parsed.return_path_domain
+        else _domain_from_address(return_path_address)
+    )
 
     urls = _extract_urls(parsed.body_plain, parsed.body_html)
     hosts = [_url_host(url) for url in urls]
     hosts = [host for host in hosts if host]
     lengths = [len(url) for url in urls]
     ip_count = sum(1 for host in hosts if _is_ip_host(host))
+    punycode_count = sum(1 for host in hosts if _host_has_punycode_label(host))
 
     extensions = _attachment_extensions(parsed.attachment_filenames)
     mime_types = [mime.lower() for mime in parsed.attachment_mime_types if mime]
@@ -126,10 +137,13 @@ def run_security_checks(parsed: ParsedEmail) -> SecurityEvidence:
         has_reply_to=bool(reply_to_address),
         from_address=from_address,
         reply_to_address=reply_to_address,
+        return_path_address=return_path_address,
         from_domain=from_domain,
         reply_to_domain=reply_to_domain,
+        return_path_domain=return_path_domain,
         from_reply_to_address_mismatch=_mismatch(from_address, reply_to_address),
         from_reply_to_domain_mismatch=_mismatch(from_domain, reply_to_domain),
+        from_return_path_domain_mismatch=_mismatch(from_domain, return_path_domain),
         header_spf_result=auth["spf"],
         header_dkim_result=auth["dkim"],
         header_dmarc_result=auth["dmarc"],
@@ -147,6 +161,7 @@ def run_security_checks(parsed: ParsedEmail) -> SecurityEvidence:
         url_length_max=float(max(lengths)) if lengths else None,
         url_length_avg=round(sum(lengths) / len(lengths), 4) if lengths else None,
         ip_url_count=ip_count,
+        punycode_url_count=punycode_count,
         has_ip_url=ip_count > 0,
         url_hosts=_unique_keep_order(hosts),
         urls=urls,
@@ -275,6 +290,10 @@ def _is_ip_host(host: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _host_has_punycode_label(host: str) -> bool:
+    return any(label.startswith("xn--") for label in host.lower().split("."))
 
 
 def _unique_keep_order(values: list[str]) -> list[str]:

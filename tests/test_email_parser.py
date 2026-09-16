@@ -30,6 +30,7 @@ def _sample_message() -> Message:
     message["To"] = "Bob <bob@company.com>, carol@company.com"
     message["Cc"] = "Dave <dave@company.com>"
     message["Reply-To"] = "Billing <noreply@example.com>"
+    message["Return-Path"] = "<alice@example.com>"
     message["Date"] = "Mon, 14 Sep 2026 10:00:00 +0000"
     message["Message-ID"] = "<invoice-123@example.com>"
     message["Received"] = (
@@ -67,6 +68,8 @@ class EmailParserTests(unittest.TestCase):
         self.assertEqual(parsed.from_address, "alice@example.com")
         self.assertEqual(parsed.from_domain, "example.com")
         self.assertEqual(parsed.reply_to, "noreply@example.com")
+        self.assertEqual(parsed.return_path, "alice@example.com")
+        self.assertEqual(parsed.return_path_domain, "example.com")
         self.assertEqual(parsed.to_addresses, ["bob@company.com", "carol@company.com"])
         self.assertEqual(parsed.cc_addresses, ["dave@company.com"])
         self.assertEqual(parsed.date, "Mon, 14 Sep 2026 10:00:00 +0000")
@@ -116,11 +119,61 @@ class EmailParserTests(unittest.TestCase):
         self.assertIsNone(parsed.from_address)
         self.assertIsNone(parsed.from_domain)
         self.assertIsNone(parsed.reply_to)
+        self.assertIsNone(parsed.return_path)
+        self.assertIsNone(parsed.return_path_domain)
         self.assertEqual(parsed.to_addresses, [])
         self.assertEqual(parsed.cc_addresses, [])
         self.assertFalse(parsed.has_attachments)
         self.assertEqual(parsed.attachment_count, 0)
         self.assertEqual(parsed.body_plain, "Hello without headers.")
+
+    def test_group_syntax_to_headers_do_not_raise(self) -> None:
+        cases = [
+            "undisclosed-recipients:;",
+            "unlisted-recipients:;",
+            "unlisted-recipients:; (no To-header on input)",
+            "undisclosed-recipients:; (no To-header on input)",
+            "undisclosed-recipients:;undisclosed-recipients:;@jussieu.fr",
+        ]
+        for to_header in cases:
+            with self.subTest(to_header=to_header):
+                raw = (
+                    f"From: Alice <alice@example.com>\n"
+                    f"To: {to_header}\n"
+                    f"Subject: Group syntax To header\n"
+                    f"\n"
+                    f"Hello\n"
+                ).encode("utf-8")
+                parsed = parse_email(raw)
+                self.assertEqual(parsed.from_address, "alice@example.com")
+                self.assertEqual(parsed.to_addresses, [])
+                self.assertEqual(parsed.subject, "Group syntax To header")
+                self.assertEqual(parsed.body_plain, "Hello")
+                self.assertIn("To", parsed.headers)
+
+    def test_group_syntax_to_header_still_extracts_member_addresses(self) -> None:
+        raw = (
+            "From: alice@example.com\n"
+            "To: friends: bob@company.com, carol@company.com;\n"
+            "Subject: Named group\n"
+            "\n"
+            "Hello\n"
+        ).encode("utf-8")
+        parsed = parse_email(raw)
+        self.assertEqual(parsed.to_addresses, ["bob@company.com", "carol@company.com"])
+
+    def test_return_path_is_extracted_when_present(self) -> None:
+        raw = (
+            "Return-Path: <bounce@mail.example.com>\n"
+            "From: Alice <alice@example.com>\n"
+            "To: bob@company.com\n"
+            "Subject: Path check\n"
+            "\n"
+            "Hello\n"
+        ).encode("utf-8")
+        parsed = parse_email(raw)
+        self.assertEqual(parsed.return_path, "bounce@mail.example.com")
+        self.assertEqual(parsed.return_path_domain, "mail.example.com")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,8 @@ class ParsedEmail:
     from_address: str | None = None
     from_domain: str | None = None
     reply_to: str | None = None
+    return_path: str | None = None
+    return_path_domain: str | None = None
     to_addresses: list[str] = field(default_factory=list)
     cc_addresses: list[str] = field(default_factory=list)
     date: str | None = None
@@ -85,8 +87,9 @@ def _parse_text_message(text: str) -> Message:
 
 
 def _extract(message: Message) -> ParsedEmail:
-    from_address = _first_address(message.get("From"))
-    reply_to = _first_address(message.get("Reply-To"))
+    from_address = _first_address(_safe_get(message, "From"))
+    reply_to = _first_address(_safe_get(message, "Reply-To"))
+    return_path = _first_address(_safe_get(message, "Return-Path"))
     attachments = _collect_attachments(message)
     body_plain, body_html = _extract_bodies(message)
 
@@ -97,6 +100,8 @@ def _extract(message: Message) -> ParsedEmail:
         from_address=from_address,
         from_domain=_domain_from_address(from_address),
         reply_to=reply_to,
+        return_path=return_path,
+        return_path_domain=_domain_from_address(return_path),
         to_addresses=_address_list(message, "To"),
         cc_addresses=_address_list(message, "Cc"),
         date=_header(message, "Date"),
@@ -111,23 +116,66 @@ def _extract(message: Message) -> ParsedEmail:
     )
 
 
-def _header(message: Message, name: str) -> str | None:
-    value = message.get(name)
-    if value is None:
+def _raw_header_pairs(message: Message) -> list[tuple[str, str]]:
+    raw_items = getattr(message, "raw_items", None)
+    pairs = list(raw_items()) if callable(raw_items) else list(getattr(message, "_headers", []))
+    result: list[tuple[str, str]] = []
+    for key, value in pairs:
+        text = value if isinstance(value, str) else str(value)
+        text = text.strip()
+        if not text:
+            continue
+        result.append((str(key), text))
+    return result
+
+
+def _header_text(value: object) -> str | None:
+    try:
+        text = str(value).strip()
+    except (AttributeError, TypeError, ValueError):
         return None
-    text = str(value).strip()
     return text or None
 
 
+def _safe_get_all(message: Message, name: str) -> list[str]:
+    # policy.default can raise AttributeError on RFC 5322 group-syntax To/Cc
+    # values such as "undisclosed-recipients:;" with trailing comments.
+    try:
+        values = []
+        for value in message.get_all(name, []):
+            text = _header_text(value)
+            if text:
+                values.append(text)
+        return values
+    except (AttributeError, TypeError, ValueError):
+        wanted = name.lower()
+        return [text for key, text in _raw_header_pairs(message) if key.lower() == wanted]
+
+
+def _safe_get(message: Message, name: str) -> str | None:
+    values = _safe_get_all(message, name)
+    return values[0] if values else None
+
+
+def _header(message: Message, name: str) -> str | None:
+    return _safe_get(message, name)
+
+
 def _all_headers(message: Message, name: str) -> list[str]:
-    values = message.get_all(name, [])
-    return [str(value).strip() for value in values if str(value).strip()]
+    return _safe_get_all(message, name)
 
 
 def _structured_headers(message: Message) -> dict[str, list[str]]:
     headers: dict[str, list[str]] = {}
-    for key, value in message.items():
-        text = str(value).strip()
+    try:
+        items = [(str(key), value) for key, value in message.items()]
+    except (AttributeError, TypeError, ValueError):
+        items = _raw_header_pairs(message)
+    for key, value in items:
+        text = value if isinstance(value, str) else _header_text(value)
+        if not text:
+            continue
+        text = text.strip()
         if not text:
             continue
         headers.setdefault(key, []).append(text)
@@ -135,9 +183,8 @@ def _structured_headers(message: Message) -> dict[str, list[str]]:
 
 
 def _address_list(message: Message, name: str) -> list[str]:
-    values = message.get_all(name, [])
     addresses = []
-    for _, address in getaddresses(str(value) for value in values):
+    for _, address in getaddresses(_safe_get_all(message, name)):
         cleaned = address.strip()
         if cleaned:
             addresses.append(cleaned)
