@@ -30,3 +30,6 @@ Thumbs.db
 # Datasets
 data/*.csv
 data/processed/*.csv
+
+# Raw email corpora
+data/raw/
